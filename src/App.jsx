@@ -223,6 +223,7 @@ export default function AttendanceApp() {
   const [showPayModal, setShowPayModal] = useState(null); // { emp, month, year }
   const [showPaidHistory, setShowPaidHistory] = useState(null); // employee object
   const [showExport, setShowExport] = useState(false);
+  const [showEditRecord, setShowEditRecord] = useState(null); // { record, editClockIn, editClockOut, editDate }
 
   // ═══════════════════════════════════════════════════════════════
   // SUPABASE DATA LOADING
@@ -265,7 +266,8 @@ export default function AttendanceApp() {
         clockIn: r.clock_in,
         clockOut: r.clock_out,
         hash: r.hash,
-        backdated: r.backdated
+        backdated: r.backdated,
+        createdBy: r.created_by || 'staff'
       })));
       setRecords(formattedRecords);
 
@@ -357,7 +359,7 @@ export default function AttendanceApp() {
     else { notify('Invalid PIN', 'error'); setClockPin(''); }
   };
 
-  const doClockAction = async (action, employee) => {
+  const doClockAction = async (action, employee, isAdmin = false) => {
     if (!employee) return;
     const now = new Date();
     const todayStr = getGMTDateStr(now);
@@ -373,7 +375,8 @@ export default function AttendanceApp() {
         date: todayStr,
         clock_in: now.toISOString(),
         clock_out: null,
-        hash: null
+        hash: null,
+        created_by: isAdmin ? 'admin' : 'staff'
       };
       rec.hash = genHash({ ...rec, hash: undefined });
       
@@ -429,7 +432,8 @@ export default function AttendanceApp() {
       clock_in: clockInISO,
       clock_out: clockOutISO,
       hash: null,
-      backdated: true
+      backdated: true,
+      created_by: 'admin'
     };
     rec.hash = genHash({ ...rec, hash: undefined });
     
@@ -440,6 +444,46 @@ export default function AttendanceApp() {
     notify(`Backdated entry added: ${employee.name} — ${fmtHours(hours)} on ${formatDate(dateStr + 'T12:00:00Z')}`);
     setBackdatedEntry({ date: '', clockIn: '', clockOut: '' });
     setOverrideEmp(null);
+    loadData();
+  };
+
+  // Update attendance record (admin only)
+  const updateRecord = async (recordId, newDate, newClockIn, newClockOut) => {
+    const clockInISO = new Date(`${newDate}T${newClockIn}:00`).toISOString();
+    const clockOutISO = new Date(`${newDate}T${newClockOut}:00`).toISOString();
+
+    if (new Date(clockOutISO) <= new Date(clockInISO)) {
+      notify('Clock out time must be after clock in time', 'error');
+      return false;
+    }
+
+    const hash = genHash({ date: newDate, clock_in: clockInISO, clock_out: clockOutISO });
+
+    const { error } = await supabase
+      .from('yss_records')
+      .update({ 
+        date: newDate, 
+        clock_in: clockInISO, 
+        clock_out: clockOutISO,
+        hash 
+      })
+      .eq('id', recordId);
+
+    if (error) { notify('Failed to update record', 'error'); console.error(error); return false; }
+    
+    notify('Record updated successfully');
+    loadData();
+    return true;
+  };
+
+  // Delete attendance record (admin only)
+  const deleteRecord = async (recordId) => {
+    if (!confirm('Delete this attendance record? This cannot be undone.')) return;
+    
+    const { error } = await supabase.from('yss_records').delete().eq('id', recordId);
+    if (error) { notify('Failed to delete record', 'error'); console.error(error); return; }
+    
+    notify('Record deleted');
     loadData();
   };
 
@@ -458,7 +502,7 @@ export default function AttendanceApp() {
       (pos) => {
         const dist = haversineMetres(pos.coords.latitude, pos.coords.longitude, GEO_FENCE.lat, GEO_FENCE.lng);
         if (dist <= GEO_FENCE.radiusMetres) {
-          doClockAction(action, employee);
+          doClockAction(action, employee, false); // Staff clock - isAdmin=false
         } else {
           const miles = (dist / 1609.344).toFixed(2);
           notify(`You are ${miles} miles away from the workplace. Clock ${action} denied.`, 'error');
@@ -1112,6 +1156,78 @@ export default function AttendanceApp() {
         </div>
       )}
 
+      {/* Edit Record Modal */}
+      {showEditRecord && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(12px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
+          <div style={{ ...G.panel, padding: 28, width: 400, animation: 'slideIn 0.3s ease' }}>
+            <h3 style={{ margin: '0 0 20px', color: '#fff', fontSize: 16, fontWeight: 600 }}>✏️ Edit Attendance Record</h3>
+            <div style={{ marginBottom: 16, padding: '12px 16px', ...G.card, borderColor: 'rgba(120,200,255,0.2)', background: 'rgba(120,200,255,0.04)' }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: '#fff' }}>{showEditRecord.record.employeeName}</div>
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 4 }}>Record ID: {showEditRecord.record.id.slice(-8)}</div>
+            </div>
+            
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', marginBottom: 6, letterSpacing: 1 }}>DATE</div>
+              <input 
+                type="date" 
+                value={showEditRecord.editDate} 
+                onChange={e => setShowEditRecord(p => ({ ...p, editDate: e.target.value }))}
+                style={{ ...G.inp, width: '100%', boxSizing: 'border-box', colorScheme: 'dark' }} 
+              />
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+              <div>
+                <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', marginBottom: 6, letterSpacing: 1 }}>CLOCK IN (GMT)</div>
+                <input 
+                  type="time" 
+                  value={showEditRecord.editClockIn} 
+                  onChange={e => setShowEditRecord(p => ({ ...p, editClockIn: e.target.value }))}
+                  style={{ ...G.inp, width: '100%', boxSizing: 'border-box', colorScheme: 'dark' }} 
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', marginBottom: 6, letterSpacing: 1 }}>CLOCK OUT (GMT)</div>
+                <input 
+                  type="time" 
+                  value={showEditRecord.editClockOut} 
+                  onChange={e => setShowEditRecord(p => ({ ...p, editClockOut: e.target.value }))}
+                  style={{ ...G.inp, width: '100%', boxSizing: 'border-box', colorScheme: 'dark' }} 
+                />
+              </div>
+            </div>
+
+            {showEditRecord.editDate && showEditRecord.editClockIn && showEditRecord.editClockOut && (
+              <div style={{ ...G.card, padding: '10px 14px', marginBottom: 16, textAlign: 'center', borderColor: 'rgba(120,200,255,0.2)', background: 'rgba(120,200,255,0.05)' }}>
+                <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>
+                  {showEditRecord.editClockIn} → {showEditRecord.editClockOut}
+                  {new Date(`2000-01-01T${showEditRecord.editClockOut}:00`) > new Date(`2000-01-01T${showEditRecord.editClockIn}:00`) && (
+                    <span style={{ color: G.acc, fontWeight: 600 }}> = {fmtHours(calcHours(`2000-01-01T${showEditRecord.editClockIn}:00`, `2000-01-01T${showEditRecord.editClockOut}:00`))}</span>
+                  )}
+                </span>
+              </div>
+            )}
+
+            <p style={{ margin: '0 0 16px', fontSize: 10, color: 'rgba(255,180,50,0.5)' }}>⚠ All times are in GMT (London time)</p>
+
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button onClick={async () => {
+                const success = await updateRecord(
+                  showEditRecord.record.id,
+                  showEditRecord.editDate,
+                  showEditRecord.editClockIn,
+                  showEditRecord.editClockOut
+                );
+                if (success) setShowEditRecord(null);
+              }} style={{ ...G.btn, flex: 1, padding: 12, color: G.acc, fontFamily: FONT, fontWeight: 700, fontSize: 13 }}>Save Changes</button>
+              <button onClick={() => setShowEditRecord(null)} style={{ ...G.btn, flex: 1, padding: 12, color: 'rgba(255,255,255,0.4)', fontFamily: FONT, fontSize: 13 }}>Cancel</button>
+            </div>
+            
+            <button onClick={() => { deleteRecord(showEditRecord.record.id); setShowEditRecord(null); }} style={{ ...G.btn, width: '100%', marginTop: 12, padding: 12, color: G.red, fontFamily: FONT, fontSize: 12, borderColor: 'rgba(255,90,90,0.2)' }}>🗑 Delete Record</button>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header style={{ position: 'relative', zIndex: 10, padding: '20px 28px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
         <div>
@@ -1474,8 +1590,8 @@ export default function AttendanceApp() {
 
                   <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', letterSpacing: 2, marginBottom: 14, fontWeight: 600 }}>CLOCK NOW</div>
                   <div style={{ display: 'flex', gap: 14, justifyContent: 'center' }}>
-                    <button onClick={() => { doClockAction('in', overrideEmp); setOverrideEmp(null); }} style={{ ...G.btn, padding: '18px 36px', fontFamily: FONT, fontSize: 14, fontWeight: 700, color: '#fff', background: 'rgba(80,220,140,0.15)', borderColor: 'rgba(80,220,140,0.35)', boxShadow: '0 4px 20px rgba(80,220,140,0.15)' }}>CLOCK IN</button>
-                    <button onClick={() => { doClockAction('out', overrideEmp); setOverrideEmp(null); }} style={{ ...G.btn, padding: '18px 36px', fontFamily: FONT, fontSize: 14, fontWeight: 700, color: '#fff', background: 'rgba(255,90,90,0.15)', borderColor: 'rgba(255,90,90,0.35)', boxShadow: '0 4px 20px rgba(255,90,90,0.15)' }}>CLOCK OUT</button>
+                    <button onClick={() => { doClockAction('in', overrideEmp, true); setOverrideEmp(null); }} style={{ ...G.btn, padding: '18px 36px', fontFamily: FONT, fontSize: 14, fontWeight: 700, color: '#fff', background: 'rgba(80,220,140,0.15)', borderColor: 'rgba(80,220,140,0.35)', boxShadow: '0 4px 20px rgba(80,220,140,0.15)' }}>CLOCK IN</button>
+                    <button onClick={() => { doClockAction('out', overrideEmp, true); setOverrideEmp(null); }} style={{ ...G.btn, padding: '18px 36px', fontFamily: FONT, fontSize: 14, fontWeight: 700, color: '#fff', background: 'rgba(255,90,90,0.15)', borderColor: 'rgba(255,90,90,0.35)', boxShadow: '0 4px 20px rgba(255,90,90,0.15)' }}>CLOCK OUT</button>
                   </div>
                   <div style={{ marginTop: 12, fontSize: 10, color: 'rgba(255,180,50,0.4)', letterSpacing: 1.5 }}>⚠ NO GPS VERIFICATION</div>
                 </div>
@@ -1624,10 +1740,10 @@ export default function AttendanceApp() {
                 <div style={{ ...G.panel, padding: 40, textAlign: 'center', color: 'rgba(255,255,255,0.2)', borderStyle: 'dashed' }}>No records for this month</div>
               ) : getDailyRecs(selectedEmployee.id, selectedMonth, selectedYear).map(rec => {
                 const hrs = rec.clockOut ? calcHours(rec.clockIn, rec.clockOut) : 0;
-                const valid = verifyRec(rec);
                 const sl = shiftLabel(rec);
+                const isAdmin = rec.createdBy === 'admin';
                 return (
-                  <div key={rec.id} style={{ ...G.card, padding: '16px 20px', display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr', gap: 16, alignItems: 'center', borderColor: !valid ? 'rgba(255,90,90,0.3)' : !rec.clockOut ? 'rgba(120,200,255,0.2)' : 'rgba(255,255,255,0.06)' }}>
+                  <div key={rec.id} style={{ ...G.card, padding: '16px 20px', display: 'grid', gridTemplateColumns: '1.2fr 0.8fr 0.8fr 0.8fr 0.8fr 0.5fr', gap: 12, alignItems: 'center', borderColor: !rec.clockOut ? 'rgba(120,200,255,0.2)' : 'rgba(255,255,255,0.06)' }}>
                     <div>
                       <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginBottom: 3 }}>DATE</div>
                       <div style={{ fontWeight: 600, fontSize: 13 }}>{formatDate(rec.date + 'T12:00:00Z')}</div>
@@ -1635,7 +1751,22 @@ export default function AttendanceApp() {
                     </div>
                     <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginBottom: 3 }}>IN</div><div style={{ color: G.grn, fontSize: 13 }}>{formatTime(rec.clockIn)}</div></div>
                     <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginBottom: 3 }}>OUT</div><div style={{ color: rec.clockOut ? G.red : G.acc, fontSize: 13 }}>{rec.clockOut ? formatTime(rec.clockOut) : 'ACTIVE'}</div></div>
-                    <div style={{ textAlign: 'right' }}><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginBottom: 3 }}>HOURS</div><div style={{ fontWeight: 700, color: G.acc, fontSize: 16 }}>{rec.clockOut ? fmtHours(hrs) : '—'}</div>{!valid && <div style={{ fontSize: 9, color: G.red, marginTop: 4 }}>⚠ TAMPERED</div>}</div>
+                    <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginBottom: 3 }}>HOURS</div><div style={{ fontWeight: 700, color: G.acc, fontSize: 14 }}>{rec.clockOut ? fmtHours(hrs) : '—'}</div></div>
+                    <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginBottom: 3 }}>BY</div><div style={{ fontSize: 11, fontWeight: 600, color: isAdmin ? 'rgba(255,180,50,0.9)' : G.acc }}>{isAdmin ? '🛡️ Admin' : '👤 Staff'}</div></div>
+                    <div style={{ textAlign: 'right' }}>
+                      {rec.clockOut && (
+                        <button onClick={() => {
+                          const clockInDate = new Date(rec.clockIn);
+                          const clockOutDate = new Date(rec.clockOut);
+                          setShowEditRecord({
+                            record: rec,
+                            editDate: rec.date,
+                            editClockIn: clockInDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Europe/London' }),
+                            editClockOut: clockOutDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Europe/London' })
+                          });
+                        }} style={{ ...G.btn, padding: '6px 12px', fontSize: 10, color: 'rgba(255,255,255,0.5)', fontFamily: FONT }}>✏️</button>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -1678,10 +1809,10 @@ export default function AttendanceApp() {
                   <div style={{ ...G.panel, padding: 60, textAlign: 'center', color: 'rgba(255,255,255,0.2)', borderStyle: 'dashed' }}><p style={{ fontSize: 16, marginBottom: 8 }}>{records.length === 0 ? 'No records yet' : 'No matching records'}</p></div>
                 ) : filtered.map(rec => {
                   const hrs = rec.clockOut ? calcHours(rec.clockIn, rec.clockOut) : 0;
-                  const valid = verifyRec(rec);
                   const sl = shiftLabel(rec);
+                  const isAdmin = rec.createdBy === 'admin';
                   return (
-                    <div key={rec.id} style={{ ...G.card, padding: '16px 20px', display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr 0.8fr 0.8fr', gap: 14, alignItems: 'center', borderColor: !valid ? 'rgba(255,90,90,0.3)' : !rec.clockOut ? 'rgba(80,220,140,0.2)' : 'rgba(255,255,255,0.06)' }}>
+                    <div key={rec.id} style={{ ...G.card, padding: '16px 20px', display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr 0.8fr 0.8fr 0.5fr', gap: 14, alignItems: 'center', borderColor: !rec.clockOut ? 'rgba(80,220,140,0.2)' : 'rgba(255,255,255,0.06)' }}>
                       <div>
                         <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 3 }}>{rec.employeeName}</div>
                         <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1692,7 +1823,21 @@ export default function AttendanceApp() {
                       <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginBottom: 2 }}>IN</div><div style={{ color: G.grn, fontSize: 13 }}>{formatTime(rec.clockIn)}</div></div>
                       <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginBottom: 2 }}>OUT</div><div style={{ color: rec.clockOut ? G.red : G.acc, fontSize: 13 }}>{rec.clockOut ? formatTime(rec.clockOut) : 'ACTIVE'}</div></div>
                       <div><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginBottom: 2 }}>HOURS</div><div style={{ fontWeight: 700, color: G.acc }}>{rec.clockOut ? fmtHours(hrs) : '—'}</div></div>
-                      <div style={{ textAlign: 'right' }}><div style={{ ...G.card, display: 'inline-block', padding: '5px 10px', fontSize: 9, fontWeight: 700, color: valid ? G.grn : G.red, borderColor: valid ? 'rgba(80,220,140,0.2)' : 'rgba(255,90,90,0.2)', background: valid ? 'rgba(80,220,140,0.08)' : 'rgba(255,90,90,0.08)' }}>{valid ? '✓ VERIFIED' : '⚠ TAMPERED'}</div></div>
+                      <div style={{ textAlign: 'center' }}><div style={{ ...G.card, display: 'inline-block', padding: '5px 10px', fontSize: 9, fontWeight: 700, color: isAdmin ? 'rgba(255,180,50,0.9)' : G.acc, borderColor: isAdmin ? 'rgba(255,180,50,0.2)' : 'rgba(120,200,255,0.2)', background: isAdmin ? 'rgba(255,180,50,0.08)' : 'rgba(120,200,255,0.08)' }}>{isAdmin ? '🛡️ Admin' : '👤 Staff'}</div></div>
+                      <div style={{ textAlign: 'right' }}>
+                        {rec.clockOut && (
+                          <button onClick={() => {
+                            const clockInDate = new Date(rec.clockIn);
+                            const clockOutDate = new Date(rec.clockOut);
+                            setShowEditRecord({
+                              record: rec,
+                              editDate: rec.date,
+                              editClockIn: clockInDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Europe/London' }),
+                              editClockOut: clockOutDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Europe/London' })
+                            });
+                          }} style={{ ...G.btn, padding: '6px 12px', fontSize: 10, color: 'rgba(255,255,255,0.5)', fontFamily: FONT }}>✏️</button>
+                        )}
+                      </div>
                     </div>
                   );
                 })}

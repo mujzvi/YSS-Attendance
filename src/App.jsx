@@ -416,8 +416,9 @@ export default function AttendanceApp() {
     const clockInTime = backdatedEntry.clockIn;
     const clockOutTime = backdatedEntry.clockOut;
 
-    const clockInISO = new Date(`${dateStr}T${clockInTime}:00`).toISOString();
-    const clockOutISO = new Date(`${dateStr}T${clockOutTime}:00`).toISOString();
+    // Treat input times as GMT (append Z to make it UTC, which is same as GMT)
+    const clockInISO = new Date(`${dateStr}T${clockInTime}:00Z`).toISOString();
+    const clockOutISO = new Date(`${dateStr}T${clockOutTime}:00Z`).toISOString();
 
     if (new Date(clockOutISO) <= new Date(clockInISO)) {
       notify('Clock out time must be after clock in time', 'error');
@@ -449,8 +450,9 @@ export default function AttendanceApp() {
 
   // Update attendance record (admin only)
   const updateRecord = async (recordId, newDate, newClockIn, newClockOut) => {
-    const clockInISO = new Date(`${newDate}T${newClockIn}:00`).toISOString();
-    const clockOutISO = new Date(`${newDate}T${newClockOut}:00`).toISOString();
+    // Treat input times as GMT (append Z to make it UTC, which is same as GMT)
+    const clockInISO = new Date(`${newDate}T${newClockIn}:00Z`).toISOString();
+    const clockOutISO = new Date(`${newDate}T${newClockOut}:00Z`).toISOString();
 
     if (new Date(clockOutISO) <= new Date(clockInISO)) {
       notify('Clock out time must be after clock in time', 'error');

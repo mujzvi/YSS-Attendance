@@ -752,6 +752,145 @@ export default function AttendanceApp() {
     notify('All attendance records exported');
   };
 
+  // PDF Export Functions
+  const generatePDF = (title, headers, rows, filename, summary = null) => {
+    // Create HTML content for PDF
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <title>${title}</title>
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body { font-family: 'Helvetica', 'Arial', sans-serif; padding: 40px; color: #333; }
+          .header { text-align: center; margin-bottom: 30px; border-bottom: 2px solid #2563eb; padding-bottom: 20px; }
+          .header h1 { font-size: 24px; color: #1e40af; margin-bottom: 5px; }
+          .header p { font-size: 12px; color: #666; }
+          .summary { display: flex; justify-content: space-around; margin-bottom: 30px; }
+          .summary-box { background: #f1f5f9; padding: 15px 25px; border-radius: 8px; text-align: center; }
+          .summary-box .label { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; }
+          .summary-box .value { font-size: 20px; font-weight: bold; color: #1e40af; margin-top: 5px; }
+          table { width: 100%; border-collapse: collapse; font-size: 11px; }
+          th { background: #1e40af; color: white; padding: 12px 8px; text-align: left; font-weight: 600; }
+          td { padding: 10px 8px; border-bottom: 1px solid #e2e8f0; }
+          tr:nth-child(even) { background: #f8fafc; }
+          tr:hover { background: #e2e8f0; }
+          .footer { margin-top: 30px; text-align: center; font-size: 10px; color: #94a3b8; }
+          .amount { font-weight: 600; color: #059669; }
+          .pending { color: #dc2626; }
+          @media print { body { padding: 20px; } }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h1>YSS Attendance System</h1>
+          <p>${title} • Generated on ${new Date().toLocaleDateString('en-GB', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+        </div>
+        ${summary ? `
+        <div class="summary">
+          ${summary.map(s => `<div class="summary-box"><div class="label">${s.label}</div><div class="value">${s.value}</div></div>`).join('')}
+        </div>
+        ` : ''}
+        <table>
+          <thead>
+            <tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>
+          </thead>
+          <tbody>
+            ${rows.map(row => `<tr>${row.map((cell, i) => {
+              let cls = '';
+              if (typeof cell === 'string' && cell.startsWith('£')) cls = 'amount';
+              if (headers[i] === 'Pending' && cell !== '£0.00') cls = 'pending';
+              return `<td class="${cls}">${cell}</td>`;
+            }).join('')}</tr>`).join('')}
+          </tbody>
+        </table>
+        <div class="footer">
+          YSS Attendance • Tamper-Proof Clock System • All times in GMT (London)
+        </div>
+      </body>
+      </html>
+    `;
+
+    // Open in new window and trigger print
+    const printWindow = window.open('', '_blank');
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.onload = () => {
+      printWindow.print();
+    };
+    notify(`PDF ready for ${title}`);
+  };
+
+  const exportAttendancePDF = (month, year) => {
+    const monthRecords = records.filter(r => {
+      if (!r.clockOut) return false;
+      const p = r.date.split('-');
+      return parseInt(p[1]) - 1 === month && parseInt(p[0]) === year;
+    }).sort((a, b) => new Date(a.clockIn) - new Date(b.clockIn));
+
+    const headers = ['Employee', 'Department', 'Date', 'Clock In', 'Clock Out', 'Hours'];
+    const rows = monthRecords.map(r => {
+      const emp = employees.find(e => e.id === r.employeeId);
+      return [
+        r.employeeName,
+        emp?.department || 'N/A',
+        new Date(r.date + 'T12:00:00Z').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+        formatTime(r.clockIn),
+        formatTime(r.clockOut),
+        calcHours(r.clockIn, r.clockOut).toFixed(2) + 'h'
+      ];
+    });
+
+    const totalHours = monthRecords.reduce((sum, r) => sum + calcHours(r.clockIn, r.clockOut), 0);
+    const summary = [
+      { label: 'Total Records', value: monthRecords.length },
+      { label: 'Total Hours', value: totalHours.toFixed(2) + 'h' },
+      { label: 'Employees', value: [...new Set(monthRecords.map(r => r.employeeId))].length }
+    ];
+
+    generatePDF(`Attendance Report - ${months[month]} ${year}`, headers, rows, `YSS_Attendance_${months[month]}_${year}.pdf`, summary);
+  };
+
+  const exportSalaryPDF = (month, year) => {
+    const headers = ['Employee', 'Department', 'Hours', 'Bank Pay', 'Cash Pay', 'Net Pay', 'Paid', 'Pending'];
+    const salaryData = employees.map(emp => {
+      const s = calculateSalary(emp, month, year);
+      const payKey = `${emp.id}-${month}-${year}`;
+      const paid = payments[payKey] || 0;
+      const pending = Math.max(0, s.totalPay - paid);
+      return { emp, s, paid, pending };
+    }).filter(d => d.s.totalHours > 0);
+
+    const rows = salaryData.map(d => [
+      d.emp.name,
+      d.emp.department,
+      d.s.totalHours.toFixed(2) + 'h',
+      formatCurrency(d.s.bankPay),
+      formatCurrency(d.s.cashPay),
+      formatCurrency(d.s.totalPay),
+      formatCurrency(d.paid),
+      formatCurrency(d.pending)
+    ]);
+
+    const totals = salaryData.reduce((acc, d) => ({
+      bankPay: acc.bankPay + d.s.bankPay,
+      cashPay: acc.cashPay + d.s.cashPay,
+      totalPay: acc.totalPay + d.s.totalPay,
+      paid: acc.paid + d.paid,
+      pending: acc.pending + d.pending
+    }), { bankPay: 0, cashPay: 0, totalPay: 0, paid: 0, pending: 0 });
+
+    const summary = [
+      { label: 'Total Bank Pay', value: formatCurrency(totals.bankPay) },
+      { label: 'Total Cash Pay', value: formatCurrency(totals.cashPay) },
+      { label: 'Grand Total', value: formatCurrency(totals.totalPay) },
+      { label: 'Total Pending', value: formatCurrency(totals.pending) }
+    ];
+
+    generatePDF(`Salary Report - ${months[month]} ${year}`, headers, rows, `YSS_Salary_${months[month]}_${year}.pdf`, summary);
+  };
+
   // ─── LOGIN ───
   if (!role) return <LoginScreen onLogin={setRole} />;
 
@@ -1122,21 +1261,24 @@ export default function AttendanceApp() {
       {/* Export Modal */}
       {showExport && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(12px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
-          <div style={{ ...G.panel, padding: 28, width: 420, maxHeight: '85vh', overflow: 'auto', animation: 'slideIn 0.3s ease' }}>
-            <h3 style={{ margin: '0 0 24px', color: '#fff', fontSize: 16, fontWeight: 600 }}>📥 Export Data (CSV)</h3>
+          <div style={{ ...G.panel, padding: 28, width: 480, maxHeight: '85vh', overflow: 'auto', animation: 'slideIn 0.3s ease' }}>
+            <h3 style={{ margin: '0 0 24px', color: '#fff', fontSize: 16, fontWeight: 600 }}>📥 Export Data</h3>
             
-            <div style={{ marginBottom: 20 }}>
+            <div style={{ marginBottom: 24 }}>
               <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', letterSpacing: 1.5, marginBottom: 12, fontWeight: 600 }}>ATTENDANCE RECORDS</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {availableMonths.map((am, i) => (
-                  <button key={i} onClick={() => exportAttendance(am.month, am.year)} style={{ ...G.btn, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontFamily: FONT }}>
+                  <div key={i} style={{ ...G.card, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontSize: 13, color: '#fff' }}>{am.label}</span>
-                    <span style={{ fontSize: 11, color: G.acc }}>📋 Export</span>
-                  </button>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button onClick={() => exportAttendance(am.month, am.year)} style={{ ...G.btn, padding: '6px 12px', fontSize: 10, color: G.acc, fontFamily: FONT }}>📋 CSV</button>
+                      <button onClick={() => exportAttendancePDF(am.month, am.year)} style={{ ...G.btn, padding: '6px 12px', fontSize: 10, color: G.red, fontFamily: FONT }}>📄 PDF</button>
+                    </div>
+                  </div>
                 ))}
                 <button onClick={exportAllAttendance} style={{ ...G.btn, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontFamily: FONT, borderColor: 'rgba(120,200,255,0.3)', background: 'rgba(120,200,255,0.08)' }}>
                   <span style={{ fontSize: 13, color: G.acc, fontWeight: 600 }}>All Records (Last 6 Months)</span>
-                  <span style={{ fontSize: 11, color: G.acc }}>📋 Export</span>
+                  <span style={{ fontSize: 11, color: G.acc }}>📋 CSV</span>
                 </button>
               </div>
             </div>
@@ -1145,10 +1287,13 @@ export default function AttendanceApp() {
               <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', letterSpacing: 1.5, marginBottom: 12, fontWeight: 600 }}>SALARY DATA</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {availableMonths.map((am, i) => (
-                  <button key={i} onClick={() => exportSalary(am.month, am.year)} style={{ ...G.btn, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontFamily: FONT }}>
+                  <div key={i} style={{ ...G.card, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontSize: 13, color: '#fff' }}>{am.label}</span>
-                    <span style={{ fontSize: 11, color: G.grn }}>💷 Export</span>
-                  </button>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button onClick={() => exportSalary(am.month, am.year)} style={{ ...G.btn, padding: '6px 12px', fontSize: 10, color: G.grn, fontFamily: FONT }}>📋 CSV</button>
+                      <button onClick={() => exportSalaryPDF(am.month, am.year)} style={{ ...G.btn, padding: '6px 12px', fontSize: 10, color: G.red, fontFamily: FONT }}>📄 PDF</button>
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>

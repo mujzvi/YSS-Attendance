@@ -688,6 +688,7 @@ export default function AttendanceApp() {
   // Admin search state
   const [searchName, setSearchName] = useState('');
   const [searchMonth, setSearchMonth] = useState('all');
+  const [searchDate, setSearchDate] = useState(''); // Specific date filter (YYYY-MM-DD)
 
   // Available months (last 6)
   const availableMonths = useMemo(() => {
@@ -1957,7 +1958,11 @@ export default function AttendanceApp() {
         {view === 'records' && (() => {
           const filtered = [...records].reverse().filter(rec => {
             if (searchName && !rec.employeeName.toLowerCase().includes(searchName.toLowerCase())) return false;
-            if (searchMonth !== 'all') {
+            if (searchDate) {
+              // Specific date filter takes priority
+              if (rec.date !== searchDate) return false;
+            } else if (searchMonth !== 'all') {
+              // Month filter only if no specific date selected
               const [fm, fy] = searchMonth.split('-').map(Number);
               const parts = rec.date.split('-');
               if (parseInt(parts[1]) - 1 !== fm || parseInt(parts[0]) !== fy) return false;
@@ -1972,12 +1977,31 @@ export default function AttendanceApp() {
               </div>
 
               {/* Search Filters */}
-              <div style={{ display: 'flex', gap: 12, marginBottom: 24 }}>
-                <div style={{ position: 'relative', flex: 1 }}>
+              <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
+                <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
                   <input value={searchName} onChange={e => setSearchName(e.target.value)} placeholder="Search by employee name..." style={{ ...G.inp, width: '100%', boxSizing: 'border-box', paddingLeft: 40 }} />
                   <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'rgba(255,255,255,0.25)', fontSize: 14 }}>🔍</span>
                 </div>
-                <select value={searchMonth} onChange={e => setSearchMonth(e.target.value)} style={{ ...G.inp, minWidth: 180, borderRadius: 12, cursor: 'pointer', appearance: 'auto' }}>
+                <div style={{ position: 'relative' }}>
+                  <input 
+                    type="date" 
+                    value={searchDate} 
+                    onChange={e => { setSearchDate(e.target.value); if (e.target.value) setSearchMonth('all'); }} 
+                    style={{ ...G.inp, minWidth: 150, borderRadius: 12, cursor: 'pointer', colorScheme: 'dark' }} 
+                  />
+                  {searchDate && (
+                    <button 
+                      onClick={() => setSearchDate('')} 
+                      style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'rgba(255,90,90,0.2)', border: 'none', borderRadius: '50%', width: 20, height: 20, color: G.red, cursor: 'pointer', fontSize: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    >✕</button>
+                  )}
+                </div>
+                <select 
+                  value={searchMonth} 
+                  onChange={e => { setSearchMonth(e.target.value); if (e.target.value !== 'all') setSearchDate(''); }} 
+                  disabled={!!searchDate}
+                  style={{ ...G.inp, minWidth: 160, borderRadius: 12, cursor: searchDate ? 'not-allowed' : 'pointer', appearance: 'auto', opacity: searchDate ? 0.5 : 1 }}
+                >
                   <option value="all">All Months</option>
                   {availableMonths.map((am, i) => <option key={i} value={`${am.month}-${am.year}`}>{am.label}</option>)}
                 </select>

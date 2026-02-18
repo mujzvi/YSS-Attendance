@@ -224,6 +224,7 @@ export default function AttendanceApp() {
   const [showPaidHistory, setShowPaidHistory] = useState(null); // employee object
   const [showExport, setShowExport] = useState(false);
   const [showEditRecord, setShowEditRecord] = useState(null); // { record, editClockIn, editClockOut, editDate }
+  const [isClocking, setIsClocking] = useState(false); // Prevent double-clicks on clock buttons
 
   // ═══════════════════════════════════════════════════════════════
   // SUPABASE DATA LOADING
@@ -360,48 +361,79 @@ export default function AttendanceApp() {
   };
 
   const doClockAction = async (action, employee, isAdmin = false) => {
-    if (!employee) return;
-    const now = new Date();
-    const todayStr = getGMTDateStr(now);
+    if (!employee || isClocking) return;
+    setIsClocking(true); // Prevent double-clicks
+    
+    try {
+      const now = new Date();
+      const todayStr = getGMTDateStr(now);
 
-    if (action === 'in') {
-      const anyOpen = records.find(r => r.employeeId === employee.id && r.clockIn && !r.clockOut);
-      if (anyOpen) { notify('Already clocked in!', 'error'); setClockEmployee(null); return; }
-      
-      const rec = {
-        id: Date.now().toString(),
-        employee_id: employee.id,
-        employee_name: employee.name,
-        date: todayStr,
-        clock_in: now.toISOString(),
-        clock_out: null,
-        hash: null,
-        created_by: isAdmin ? 'admin' : 'staff'
-      };
-      rec.hash = genHash({ ...rec, hash: undefined });
-      
-      const { error } = await supabase.from('yss_records').insert([rec]);
-      if (error) { notify('Failed to clock in', 'error'); console.error(error); return; }
-      
-      notify(`${employee.name} clocked IN at ${formatTime(now)}`);
-    } else {
-      const open = records.find(r => r.employeeId === employee.id && r.clockIn && !r.clockOut);
-      if (!open) { notify('Not clocked in!', 'error'); setClockEmployee(null); return; }
-      
-      const clockOutTime = now.toISOString();
-      const hash = genHash({ ...open, clockOut: clockOutTime, hash: undefined });
-      
-      const { error } = await supabase
-        .from('yss_records')
-        .update({ clock_out: clockOutTime, hash })
-        .eq('id', open.id);
-      
-      if (error) { notify('Failed to clock out', 'error'); console.error(error); return; }
-      
-      notify(`${employee.name} clocked OUT — ${fmtHours(calcHours(open.clockIn, now))} worked`);
-    }
-    setClockEmployee(null);
-    loadData();
+      if (action === 'in') {
+        // Check database directly to prevent race conditions
+        const { data: openSessions } = await supabase
+          .from('yss_records')
+          .select('id')
+          .eq('employee_id', employee.id)
+          .is('clock_out', null);
+        
+        if (openSessions && openSessions.length > 0) { 
+          notify('Already clocked in!', 'error'); 
+          setClockEmployee(null); 
+          loadData(); // Refresh to show current state
+          return; 
+        }
+        
+        const rec = {
+          id: Date.now().toString(),
+          employee_id: employee.id,
+          employee_name: employee.name,
+          date: todayStr,
+          clock_in: now.toISOString(),
+          clock_out: null,
+          hash: null,
+          created_by: isAdmin ? 'admin' : 'staff'
+        };
+        rec.hash = genHash({ ...rec, hash: undefined });
+        
+        const { error } = await supabase.from('yss_records').insert([rec]);
+        if (error) { notify('Failed to clock in', 'error'); console.error(error); return; }
+        
+        notify(`${employee.name} clocked IN at ${formatTime(now)}`);
+      } else {
+        // Check database directly for open session
+        const { data: openSessions } = await supabase
+          .from('yss_records')
+          .select('*')
+          .eq('employee_id', employee.id)
+          .is('clock_out', null)
+          .order('clock_in', { ascending: false })
+          .limit(1);
+        
+        if (!openSessions || openSessions.length === 0) { 
+          notify('Not clocked in!', 'error'); 
+          setClockEmployee(null); 
+          loadData();
+          return; 
+        }
+        
+        const open = openSessions[0];
+        const clockOutTime = now.toISOString();
+        const hash = genHash({ employeeId: open.employee_id, clockIn: open.clock_in, clockOut: clockOutTime });
+        
+        const { error } = await supabase
+          .from('yss_records')
+          .update({ clock_out: clockOutTime, hash })
+          .eq('id', open.id);
+        
+        if (error) { notify('Failed to clock out', 'error'); console.error(error); return; }
+        
+        notify(`${employee.name} clocked OUT — ${fmtHours(calcHours(open.clock_in, now))} worked`);
+      }
+      setClockEmployee(null);
+      loadData();
+    } finally {
+      setIsClocking(false); // Re-enable buttons
+    };
   };
 
   // Create backdated entry (admin only)
@@ -491,7 +523,7 @@ export default function AttendanceApp() {
 
   // GPS-verified clock action for staff
   const clockAction = (action, employee) => {
-    if (!employee || geoChecking) return;
+    if (!employee || geoChecking || isClocking) return;
     setGeoChecking(true);
 
     if (!navigator.geolocation) {
@@ -1737,8 +1769,8 @@ export default function AttendanceApp() {
 
                   <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', letterSpacing: 2, marginBottom: 14, fontWeight: 600 }}>CLOCK NOW</div>
                   <div style={{ display: 'flex', gap: 14, justifyContent: 'center' }}>
-                    <button onClick={() => { doClockAction('in', overrideEmp, true); setOverrideEmp(null); }} style={{ ...G.btn, padding: '18px 36px', fontFamily: FONT, fontSize: 14, fontWeight: 700, color: '#fff', background: 'rgba(80,220,140,0.15)', borderColor: 'rgba(80,220,140,0.35)', boxShadow: '0 4px 20px rgba(80,220,140,0.15)' }}>CLOCK IN</button>
-                    <button onClick={() => { doClockAction('out', overrideEmp, true); setOverrideEmp(null); }} style={{ ...G.btn, padding: '18px 36px', fontFamily: FONT, fontSize: 14, fontWeight: 700, color: '#fff', background: 'rgba(255,90,90,0.15)', borderColor: 'rgba(255,90,90,0.35)', boxShadow: '0 4px 20px rgba(255,90,90,0.15)' }}>CLOCK OUT</button>
+                    <button disabled={isClocking} onClick={() => { doClockAction('in', overrideEmp, true); }} style={{ ...G.btn, padding: '18px 36px', fontFamily: FONT, fontSize: 14, fontWeight: 700, color: '#fff', background: 'rgba(80,220,140,0.15)', borderColor: 'rgba(80,220,140,0.35)', boxShadow: '0 4px 20px rgba(80,220,140,0.15)', opacity: isClocking ? 0.5 : 1, cursor: isClocking ? 'not-allowed' : 'pointer' }}>{isClocking ? 'Processing...' : 'CLOCK IN'}</button>
+                    <button disabled={isClocking} onClick={() => { doClockAction('out', overrideEmp, true); }} style={{ ...G.btn, padding: '18px 36px', fontFamily: FONT, fontSize: 14, fontWeight: 700, color: '#fff', background: 'rgba(255,90,90,0.15)', borderColor: 'rgba(255,90,90,0.35)', boxShadow: '0 4px 20px rgba(255,90,90,0.15)', opacity: isClocking ? 0.5 : 1, cursor: isClocking ? 'not-allowed' : 'pointer' }}>{isClocking ? 'Processing...' : 'CLOCK OUT'}</button>
                   </div>
                   <div style={{ marginTop: 12, fontSize: 10, color: 'rgba(255,180,50,0.4)', letterSpacing: 1.5 }}>⚠ NO GPS VERIFICATION</div>
                 </div>
